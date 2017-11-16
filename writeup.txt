@@ -1,0 +1,127 @@
+; Hello there. Since I've been doing some reversing lately, I'd share some of what I've learned.
+; I was interested in learning how C structs are handled at a low level.
+; To follow along, compile 'sauce.m' and open it in your disassembler of choice. (I'm using IDA)
+
+; The best place to start when reversing a binary is _main. Let's take a look:
+__text:0000000100000EF0 _main           proc near
+__text:0000000100000EF0                 push    rbp
+__text:0000000100000EF1                 mov     rbp, rsp
+__text:0000000100000EF4                 sub     rsp, 70h
+__text:0000000100000EF8                 mov     dword ptr [rbp-4], 0
+__text:0000000100000EFF                 call    _objc_autoreleasePoolPush
+__text:0000000100000F04                 lea     rdi, [rbp-48h]           ; Return Value placed at this address
+__text:0000000100000F08                 lea     rcx, [rbp-28h]           ; Struct base address
+__text:0000000100000F0C                 mov     rdx, 0BADC0DEBADC0DE00h  ; struct.fo
+__text:0000000100000F16                 mov     rsi, 0DEADBEEFDEADBEEFh  ; struct.tres
+__text:0000000100000F20                 mov     r8, 0BADBABEBADBABE00h   ; struct.dos
+__text:0000000100000F2A                 mov     r9, 1337133713371337h    ; struct.uno
+
+__text:0000000100000F34                 mov     [rbp-28h], r9            ; struct.uno
+__text:0000000100000F38                 mov     [rbp-20h], r8            ; struct.dos
+__text:0000000100000F3C                 mov     [rbp-18h], rsi           ; struct.tres
+__text:0000000100000F40                 mov     [rbp-10h], rdx           ; struct.fo
+__text:0000000100000F44                 mov     rdx, [rcx]
+__text:0000000100000F47                 mov     [rsp], rdx
+__text:0000000100000F4B                 mov     rdx, [rcx+8]
+__text:0000000100000F4F                 mov     [rsp+8], rdx
+__text:0000000100000F54                 mov     rdx, [rcx+10h]
+__text:0000000100000F58                 mov     [rsp+10h], rdx
+__text:0000000100000F5D                 mov     rcx, [rcx+18h]
+__text:0000000100000F61                 mov     [rsp+18h], rcx
+__text:0000000100000F66                 mov     [rbp-50h], rax
+__text:0000000100000F6A                 call    _structHandler
+__text:0000000100000F6F                 mov     rdi, [rbp-50h]
+__text:0000000100000F73                 call    _objc_autoreleasePoolPop
+__text:0000000100000F78                 xor     eax, eax
+__text:0000000100000F7A                 add     rsp, 70h
+__text:0000000100000F7E                 pop     rbp
+__text:0000000100000F7F                 retn
+__text:0000000100000F7F _main           endp
+; Right away you should have noticed some interesting things
+; Namely, the addresses loaded into RDI and RDX.
+; It might look a bit intimidating at first, but we'll analyze it in smaller chunks.
+
+
+; We can see the values for each field of the structure getting MOV'ed into registers RDX, RSI, R8, and R9:
+__text:0000000100000F0C                 mov     rdx, 0BADC0DEBADC0DE00h ; spamm.fo 
+__text:0000000100000F16                 mov     rsi, 0DEADBEEFDEADBEEFh ; spamm.tres
+__text:0000000100000F20                 mov     r8, 0BADBABEBADBABE00h  ; spamm.dos
+__text:0000000100000F2A                 mov     r9, 1337133713371337h   ; spamm.uno
+
+; The registers are then moved onto the stack.
+__text:0000000100000F34                 mov     [rbp-28h], r9  ; spamm.uno 
+__text:0000000100000F38                 mov     [rbp-20h], r8  ; spamm.dos
+__text:0000000100000F3C                 mov     [rbp-18h], rsi ; spamm.tres
+__text:0000000100000F40                 mov     [rbp-10h], rdx ; spamm.fo
+; From the two snippets above, we make an interesting observation.
+; Structs are just blobs of memory on the stack (or on the heap if you allocate them there).
+
+
+; The next bit of code is a little more interesting
+__text:0000000100000F44                 mov     rdx, [rcx]     ; field #1 of struct
+__text:0000000100000F47                 mov     [rsp], rdx     ; place it on top of the stack
+__text:0000000100000F4B                 mov     rdx, [rcx+8]   ; field #2 of the struct
+__text:0000000100000F4F                 mov     [rsp+8], rdx   ; place it below field 2
+__text:0000000100000F54                 mov     rdx, [rcx+10h] ; field #3 of struct
+__text:0000000100000F58                 mov     [rsp+10h], rdx ; and so on
+__text:0000000100000F5D                 mov     rcx, [rcx+18h] ; and so forth
+__text:0000000100000F61                 mov     [rsp+18h], rcx ; 
+
+; RCX holds a pointer to the top of the struct.
+__text:0000000100000F08                 lea     rcx, [rbp-28h] ; Remember this from earlier?
+
+; It may look confusing, but the above code loads the struct on top of the stack 8 bytes at a time.
+; We make another interesting observation - structs are passed on the stack.
+
+; The avid reader will have noticed something interesting. 
+; According to the x86_64 calling convention, arguments are passed in RDI, RSI, RDX, RCX, R8, R9
+; Subsequent arguments get passed on the stack in reverse order.
+; So if the struct is passed on the stack, what happens to RDI?
+
+
+; It holds a pointer to some memory region that the structHandler() function will use later
+__text:0000000100000F04                 lea     rdi, [rbp-48h]
+; Again, yet another interesting observation - RDI holds an address which is 32 bytes above the struct initialized on the stack
+; I encourage you to pause and try and think about why this may be
+
+
+; The next instruction is a call to _structHandler
+; Let's view the dissasembly for this function
+__text:0000000100000EC0 _structHandler  proc near               ; CODE XREF: _main+7A↓p
+__text:0000000100000EC0
+__text:0000000100000EC0 arg_0           = byte ptr  10h
+__text:0000000100000EC0
+__text:0000000100000EC0                 push    rbp
+__text:0000000100000EC1                 mov     rbp, rsp
+__text:0000000100000EC4                 mov     rax, rdi        ; Saves a pointer to the returned struct in RAX
+__text:0000000100000EC7                 lea     rcx, [rbp+10h]  ; address of struct
+__text:0000000100000ECB                 mov     rdx, [rcx]      ; struct.uno
+__text:0000000100000ECE                 mov     [rdi], rdx      ; 
+__text:0000000100000ED1                 mov     rdx, [rcx+8]    ; struct.dos
+__text:0000000100000ED5                 mov     [rdi+8], rdx
+__text:0000000100000ED9                 mov     rdx, [rcx+10h]  ; struct.tres
+__text:0000000100000EDD                 mov     [rdi+10h], rdx
+__text:0000000100000EE1                 mov     rcx, [rcx+18h]  ; struct.fo
+__text:0000000100000EE5                 mov     [rdi+18h], rcx
+__text:0000000100000EE9                 pop     rbp
+__text:0000000100000EEA                 retn                    ; Return Near from Procedure
+__text:0000000100000EEA _structHandler  endp
+; structHandler is fairly straightforward.
+; It retrieves the structure passed to it on the stack, and MOV's it to the memory region at RDI - 8 bytes at a time.
+; Then the pointer passed in RDI is placed in RAX
+; That makes sense because RAX holds the return value of the function, and st
+
+
+
+; Let's sum up everything we've learned
+;   - Structs are initialized on the stack (or heap).
+;   - Structs are passed on the stack.
+;   - If a function returns a struct, it is given a pointer to a memory region where it puts the struct
+
+
+
+; That's all for now! Hopefully you've learned something.
+; This may have been the first binary you've reversed, but hopefully it's not the last!
+; Have fun, and keep hacking!
+
+; ~KingCyrin
