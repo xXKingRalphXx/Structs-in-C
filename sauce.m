@@ -26,7 +26,7 @@ int main(void){
         spamm.tres = 0xdeadbeefdeadbeef;
         spamm.fo = 0xbadc0debadc0de00;
         
-        // self explanatory
+        // call the function and see what happens
         structHandler(spamm);
     }
     return 0;
